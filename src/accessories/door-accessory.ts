@@ -122,11 +122,17 @@ export class DoorAccessory {
     const idleTimeLimit = 1 * 60 * 1000; // 1 minute
 
     if (!this.client || idleTime > idleTimeLimit) {
+      this.log.debug('Client is not initialized or has been idle for too long, reinitializing.');
+
       if (this.client) {
         await this.client.shutdown();
       }
 
-      this.client = new IconaBridgeClient(this.config.bridge_url, this.config.bridge_port, this.log);
+      this.client = new IconaBridgeClient(
+        this.config.bridge_url,
+        this.config.bridge_port,
+        this.log
+      );
       await this.client.connect();
       const code = await this.client.authenticate(this.config.icona_token);
       if (code !== 200) {
@@ -137,6 +143,8 @@ export class DoorAccessory {
 
       const addressBookAll = this.getAddressBookAll();
       await this.client.openDoorInit(addressBookAll.vip);
+    } else {
+      this.log.debug('Client is already initialized, reusing.');
     }
 
     this.clientLastUsed = now;
