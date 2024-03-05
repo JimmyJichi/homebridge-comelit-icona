@@ -19,6 +19,8 @@ export class DoorAccessory {
   private closeTimeout: Timeout;
   private closingTimeout: Timeout;
   private client: IconaBridgeClient;
+  private clientLastUsed: number;
+  private clientShutdownTimeout: Timeout;
 
   private lockState;
   private readonly isActuator;
@@ -112,12 +114,54 @@ export class DoorAccessory {
   }
 
   /**
+   * Get the client, initializing it if necessary.
+   */
+  private async getClient(): Promise<IconaBridgeClient> {
+    const now = Date.now();
+    const idleTime = now - this.clientLastUsed;
+    const idleTimeLimit = 1 * 60 * 1000; // 1 minute
+
+    if (!this.client || idleTime > idleTimeLimit) {
+      if (this.client) {
+        await this.client.shutdown();
+      }
+
+      this.client = new IconaBridgeClient(this.config.bridge_url, this.config.bridge_port, this.log);
+      await this.client.connect();
+      const code = await this.client.authenticate(this.config.icona_token);
+      if (code !== 200) {
+        await this.client.shutdown();
+        this.client = null;
+        throw new Error(`Error during authentication (${code})`);
+      }
+
+      const addressBookAll = this.getAddressBookAll();
+      await this.client.openDoorInit(addressBookAll.vip);
+    }
+
+    this.clientLastUsed = now;
+
+    // Set a timer to shut down the client after the idle time limit
+    if (this.clientShutdownTimeout) {
+      clearTimeout(this.clientShutdownTimeout);
+    }
+    this.clientShutdownTimeout = setTimeout(() => {
+      if (this.client) {
+        this.client.shutdown();
+        this.client = null;
+      }
+    }, idleTimeLimit);
+
+    return this.client;
+  }
+
+  /**
    * Handle requests to set the "Target Position" characteristic
    */
   async handleTargetPositionSet(value) {
     this.log.debug('Triggered SET TargetPosition:' + value);
     try {
-      await this.initClient();
+      this.client = await this.getClient();
       this.log.debug(`ICONA Client initialized`);
     } catch (e) {
       this.log.info(`ICONA Client failed to initialize: ${e.message}`);
@@ -136,10 +180,6 @@ export class DoorAccessory {
         deviceConfig = getDeviceConfigOrDefault(this.config, doorItem);
         await this.client.openDoor(addressBookAll.vip, doorItem);
       }
-      await this.client.shutdown();
-      this.client = null;
-      clearTimeout(this.closeTimeout);
-      clearTimeout(this.closingTimeout);
       switch (deviceConfig.type) {
         case SupportedTypes.door:
           this.handleAsDoor(deviceConfig);
@@ -153,21 +193,6 @@ export class DoorAccessory {
       }
     } else {
       this.log.error(`ICONA Authentication failed`);
-    }
-  }
-
-  private async initClient() {
-    const client = new IconaBridgeClient(this.config.bridge_url, this.config.bridge_port, this.log);
-    await client.connect();
-    const code = await client.authenticate(this.config.icona_token);
-    if (code === 200) {
-      const addressBookAll = this.getAddressBookAll();
-      await client.openDoorInit(addressBookAll.vip);
-      this.client = client;
-    } else {
-      await client.shutdown();
-      this.client = null;
-      throw new Error(`Error during authentication (${code})`);
     }
   }
 
